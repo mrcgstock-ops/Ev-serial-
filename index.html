@@ -61,48 +61,46 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 let rows=[], header=[], serialKey=null, idKey=null;
-let verifiedSet=new Set();          // row indexes verified
+let verifiedSet=new Set();
 let stream=null, autoTimer=null, indexMap=null, saveKey=null;
 
-const $=id=>document.getElementById(id);
-const status=t=>$.status.textContent=t;
-const setProgress=()=> $.progress.textContent = `${verifiedSet.size} verified`;
-const normalize=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+const el = id => document.getElementById(id);
+const setStatus = t => el('status').textContent = t;
+const setProgress = () => el('progress').textContent = `${verifiedSet.size} verified`;
+const normalize = s => String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
 
 // ----- CSV -----
-$('csvFile').addEventListener('change', e=>{
+el('csvFile').addEventListener('change', e=>{
   const f=e.target.files[0]; if(!f) return;
   Papa.parse(f,{header:true,skipEmptyLines:true,complete:r=>{
     rows=r.data; header=r.meta.fields||Object.keys(rows[0]||{});
     const serialGuess = header.find(h=>/attributes\.SerialNumber/i.test(h)) || header.find(h=>/serial|mac|sn/i.test(h)) || header[0];
     const idGuess = header.find(h=>/attributes\.ChargePointLabel/i.test(h)) || header.find(h=>/label|name|id/i.test(h)) || header[0];
 
-    const serialSel=$('serialCol'); serialSel.innerHTML='';
+    const serialSel=el('serialCol'); serialSel.innerHTML='';
     header.forEach(h=>{ const o=document.createElement('option'); o.value=h; o.textContent=h; if(h===serialGuess) o.selected=true; serialSel.appendChild(o); });
     serialKey=serialSel.value;
 
-    const idSel=$('idCol'); idSel.innerHTML='';
+    const idSel=el('idCol'); idSel.innerHTML='';
     header.forEach(h=>{ const o=document.createElement('option'); o.value=h; o.textContent=h; if(h===idGuess) o.selected=true; idSel.appendChild(o); });
     idKey=idSel.value;
 
-    // Build lookup
     indexMap=new Map(); rows.forEach((row,i)=>{ const key=normalize(row[serialKey]); if(key) indexMap.set(key,i); });
 
-    // Temp storage key + restore
     saveKey = `evChecker:${f.name}:${rows.length}:${header.join('|')}:${serialKey}`;
     restoreProgress();
 
-    renderTable(); setProgress(); $('downloadCsv').disabled=false; status('CSV loaded');
+    renderTable(); setProgress(); el('downloadCsv').disabled=false; setStatus('CSV loaded');
   }});
 });
 
-$('serialCol').addEventListener('change',e=>{
+el('serialCol').addEventListener('change',e=>{
   serialKey=e.target.value;
   indexMap=new Map(); rows.forEach((row,i)=>{ const key=normalize(row[serialKey]); if(key) indexMap.set(key,i); });
-  saveKey = `evChecker:${$('csvFile').files[0]?.name||'csv'}:${rows.length}:${header.join('|')}:${serialKey}`;
+  saveKey = `evChecker:${el('csvFile').files[0]?.name||'csv'}:${rows.length}:${header.join('|')}:${serialKey}`;
   restoreProgress(); renderTable(); setProgress();
 });
-$('idCol').addEventListener('change',e=>{ idKey=e.target.value; renderTable(); });
+el('idCol').addEventListener('change',e=>{ idKey=e.target.value; renderTable(); });
 
 // ----- Temp storage -----
 function restoreProgress(){
@@ -120,7 +118,7 @@ function persistProgress(){
 
 // ----- UI table -----
 function renderTable(){
-  if(!rows.length){ $('tableWrap').innerHTML=''; return; }
+  if(!rows.length){ el('tableWrap').innerHTML=''; return; }
   const table=document.createElement('table');
   const thead=document.createElement('thead');
   const trh=document.createElement('tr');
@@ -137,29 +135,29 @@ function renderTable(){
   });
 
   table.appendChild(thead); table.appendChild(tbody);
-  $('tableWrap').innerHTML=''; $('tableWrap').appendChild(table);
+  el('tableWrap').innerHTML=''; el('tableWrap').appendChild(table);
 }
 
 // ----- Camera / image -----
 async function startCam(){
   try{
     stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-    const v=$('video'); v.srcObject=stream; await v.play();
-    $('snap').disabled=false; $('stopCam').disabled=false;
-    status('Camera running'); if($('auto').checked) startAuto();
+    const v=el('video'); v.srcObject=stream; await v.play();
+    el('snap').disabled=false; el('stopCam').disabled=false;
+    setStatus('Camera running'); if(el('auto').checked) startAuto();
   }catch(e){ alert('Camera error: '+e.message); }
 }
-function stopCam(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } stopAuto(); $('snap').disabled=true; $('stopCam').disabled=true; status('Camera stopped'); }
+function stopCam(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } stopAuto(); el('snap').disabled=true; el('stopCam').disabled=true; setStatus('Camera stopped'); }
 function startAuto(){ stopAuto(); autoTimer=setInterval(scanFrame,2000); }
 function stopAuto(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; } }
-$('startCam').onclick=startCam; $('stopCam').onclick=stopCam; $('snap').onclick=scanFrame;
-$('auto').onchange=e=>{ if(e.target.checked&&stream) startAuto(); else stopAuto(); };
+el('startCam').onclick=startCam; el('stopCam').onclick=stopCam; el('snap').onclick=scanFrame;
+el('auto').onchange=e=>{ if(e.target.checked&&stream) startAuto(); else stopAuto(); };
 
-$('imgFile').addEventListener('change', async e=>{
+el('imgFile').addEventListener('change', async e=>{
   const file=e.target.files[0]; if(!file) return;
   const img=new Image();
   img.onload=async()=>{
-    const c=$('canvas'), ctx=c.getContext('2d');
+    const c=el('canvas'), ctx=c.getContext('2d');
     c.width=img.width; c.height=img.height; ctx.drawImage(img,0,0);
     await analyzeCanvas();
   };
@@ -167,69 +165,62 @@ $('imgFile').addEventListener('change', async e=>{
 });
 
 async function scanFrame(){
-  if(!stream) return; const v=$('video'); if(v.readyState<2) return;
-  const c=$('canvas'), ctx=c.getContext('2d');
+  if(!stream) return; const v=el('video'); if(v.readyState<2) return;
+  const c=el('canvas'), ctx=c.getContext('2d');
   c.width=v.videoWidth; c.height=v.videoHeight; ctx.drawImage(v,0,0,c.width,c.height);
   await analyzeCanvas();
 }
 
-// ----- OCR: pick alphanumeric serials (ACE0076657) or numeric (26780941) -----
+// ----- OCR serial picking -----
 function pickSerialFromText(text){
   const raw = text.replace(/\s+/g,' ').trim();
   const U = raw.toUpperCase();
-
-  // Candidates: 8–14 alphanumeric OR 6–12 digits
   const alphaNum = [...U.matchAll(/\b[A-Z0-9]{8,14}\b/g)].map(m=>({value:m[0], index:m.index}));
   const digits   = [...U.matchAll(/\b\d{6,12}\b/g)].map(m=>({value:m[0], index:m.index}));
   const nums = [...alphaNum, ...digits];
   if(nums.length===0) return '';
 
   const counts = {}; nums.forEach(n=>{ counts[n.value]=(counts[n.value]||0)+1; });
-
-  function near(i, kw){ const k=U.indexOf(kw); return k>=0 && Math.abs(i-k) < 80; }
-
-  function score(n){
+  const near = (i,kw)=>{ const k=U.indexOf(kw); return k>=0 && Math.abs(i-k) < 80; };
+  const score = n=>{
     let s=0;
-    if(counts[n.value]>=2) s+=5;                // appears twice on label
+    if(counts[n.value]>=2) s+=5;
     if(near(n.index,'192.168.2.1')) s+=3;
     if(near(n.index,'ADMIN')) s+=3;
-    if(/^[A-Z]{2,}/.test(n.value)) s+=2;       // starts with letters like ACE…
-    if(/^\d{8}$/.test(n.value)) s+=2;          // pure 8-digit (other label style)
-    s += Math.min(n.value.length, 14)/14;      // stability bonus
+    if(/^[A-Z]{2,}/.test(n.value)) s+=2;
+    if(/^\d{8}$/.test(n.value)) s+=2;
+    s += Math.min(n.value.length, 14)/14;
     return s;
-  }
-
+  };
   nums.sort((a,b)=> score(b)-score(a));
   return nums[0].value || '';
 }
 
 async function analyzeCanvas(){
-  status('Scanning...');
-  const c=$('canvas');
+  setStatus('Scanning...');
+  const c=el('canvas');
   const { data:{ text } } = await Tesseract.recognize(c,'eng',{tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_:./@'});
   const candidate = pickSerialFromText(text);
-  $('detected').textContent = candidate || '—';
+  el('detected').textContent = candidate || '—';
 
-  if(!rows.length||!serialKey){ $('result').textContent='Load a CSV first.'; status('Waiting for CSV'); return; }
-
+  if(!rows.length||!serialKey){ el('result').textContent='Load a CSV first.'; setStatus('Waiting for CSV'); return; }
   const norm = normalize(candidate);
-  if(!norm || norm.length < 6){ $('result').textContent='Could not read a clear serial. Move closer / add light.'; status('No clear serial'); return; }
+  if(!norm || norm.length < 6){ el('result').textContent='Could not read a clear serial. Move closer / add light.'; setStatus('No clear serial'); return; }
 
   const idx = indexMap.get(norm);
   if(idx!==undefined){
     verifiedSet.add(idx);
     renderTable(); setProgress(); persistProgress();
     const idVal = rows[idx]?.[idKey] ?? '';
-    $('result').innerHTML = `<span class="pill ok">Match ✓</span>${idVal? ' → ID: '+idVal:''}`;
-    status('Matched');
+    el('result').innerHTML = `<span class="pill ok">Match ✓</span>${idVal? ' → ID: '+idVal:''}`;
+    setStatus('Matched');
   }else{
-    $('result').innerHTML = `<span class="pill bad">Not found</span>`;
-    status('Not found');
+    el('result').innerHTML = `<span class="pill bad">Not found</span>`;
+    setStatus('Not found');
   }
 }
 
-// ----- Export CSV with Verified column -----
-$('downloadCsv').addEventListener('click', ()=>{
+el('downloadCsv').addEventListener('click', ()=>{
   if(!rows.length) return;
   const out = rows.map((r,i)=>({ ...r, Verified: verifiedSet.has(i)?'Yes':'' }));
   const csv = Papa.unparse(out);
@@ -238,10 +229,6 @@ $('downloadCsv').addEventListener('click', ()=>{
   const a=document.createElement('a'); a.href=url; a.download='ev_serials_verified.csv'; a.click();
   URL.revokeObjectURL(url);
 });
-
-function persistProgress(){
-  try{ localStorage.setItem(saveKey, JSON.stringify([...verifiedSet])); }catch{}
-}
 </script>
 </body>
 </html>
