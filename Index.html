@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EV Charger Serial Checker</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px}
+  header{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  video,canvas{max-width:100%}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0;align-items:center}
+  .ok{background:#e8f7e8}.bad{background:#ffeaea}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid #ddd}
+  .pill.ok{color:#0a7a0a;border-color:#a6d8a6}.pill.bad{color:#b00020;border-color:#f5b5b5}
+  table{border-collapse:collapse;width:100%;margin-top:10px}
+  th,td{border:1px solid #ddd;padding:6px;font-size:14px} th{background:#f6f6f6;position:sticky;top:0}
+  #scanBox{border:2px dashed #aaa;padding:10px;border-radius:8px}
+  #status{font-size:14px;opacity:.8}
+</style>
+</head>
+<body>
+<header>
+  <h1 style="margin:0;">EV Charger Serial Checker</h1>
+  <span id="status" class="pill">Idle</span>
+</header>
+
+<section>
+  <h2>1) Load your CSV</h2>
+  <div class="controls">
+    <input type="file" id="csvFile" accept=".csv" />
+    <label>Serial column:
+      <select id="serialCol"></select>
+    </label>
+    <label>Show as ID:
+      <select id="idCol"></select>
+    </label>
+    <button id="downloadCsv" disabled>Export updated CSV</button>
+    <span id="progress" class="pill">0 verified</span>
+  </div>
+  <div id="tableWrap"></div>
+</section>
+
+<section>
+  <h2>2) Scan the sticker (camera or photo)</h2>
+  <div id="scanBox">
+    <div class="controls">
+      <button id="startCam">Start Camera</button>
+      <button id="stopCam" disabled>Stop Camera</button>
+      <input type="file" id="imgFile" accept="image/*;capture=camera" />
+      <button id="snap" disabled>Scan Frame</button>
+      <label><input type="checkbox" id="auto" checked /> Auto-scan every 2s</label>
+    </div>
+    <video id="video" playsinline muted style="width:100%; max-height:300px; background:#000;"></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+  </div>
+  <p><strong>Detected serial:</strong> <span id="detected">—</span></p>
+  <p><strong>Result:</strong> <span id="result">—</span></p>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+let rows=[], header=[], serialKey=null, idKey=null;
+let verifiedSet=new Set();          // row indexes verified
+let stream=null, autoTimer=null, indexMap=null, saveKey=null;
+
+const $=id=>document.getElementById(id);
+const status=t=>$.status.textContent=t;
+const setProgress=()=> $.progress.textContent = `${verifiedSet.size} verified`;
+const normalize=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+
+// ----- CSV -----
+$('csvFile').addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return;
+  Papa.parse(f,{header:true,skipEmptyLines:true,complete:r=>{
+    rows=r.data; header=r.meta.fields||Object.keys(rows[0]||{});
+    const serialGuess = header.find(h=>/attributes\.SerialNumber/i.test(h)) || header.find(h=>/serial|mac|sn/i.test(h)) || header[0];
+    const idGuess = header.find(h=>/attributes\.ChargePointLabel/i.test(h)) || header.find(h=>/label|name|id/i.test(h)) || header[0];
+
+    const serialSel=$('serialCol'); serialSel.innerHTML='';
+    header.forEach(h=>{ const o=document.createElement('option'); o.value=h; o.textContent=h; if(h===serialGuess) o.selected=true; serialSel.appendChild(o); });
+    serialKey=serialSel.value;
+
+    const idSel=$('idCol'); idSel.innerHTML='';
+    header.forEach(h=>{ const o=document.createElement('option'); o.value=h; o.textContent=h; if(h===idGuess) o.selected=true; idSel.appendChild(o); });
+    idKey=idSel.value;
+
+    // Build lookup
+    indexMap=new Map(); rows.forEach((row,i)=>{ const key=normalize(row[serialKey]); if(key) indexMap.set(key,i); });
+
+    // Temp storage key + restore
+    saveKey = `evChecker:${f.name}:${rows.length}:${header.join('|')}:${serialKey}`;
+    restoreProgress();
+
+    renderTable(); setProgress(); $('downloadCsv').disabled=false; status('CSV loaded');
+  }});
+});
+
+$('serialCol').addEventListener('change',e=>{
+  serialKey=e.target.value;
+  indexMap=new Map(); rows.forEach((row,i)=>{ const key=normalize(row[serialKey]); if(key) indexMap.set(key,i); });
+  saveKey = `evChecker:${$('csvFile').files[0]?.name||'csv'}:${rows.length}:${header.join('|')}:${serialKey}`;
+  restoreProgress(); renderTable(); setProgress();
+});
+$('idCol').addEventListener('change',e=>{ idKey=e.target.value; renderTable(); });
+
+// ----- Temp storage -----
+function restoreProgress(){
+  verifiedSet.clear();
+  try{
+    const saved = JSON.parse(localStorage.getItem(saveKey)||'[]');
+    saved.forEach(i=>verifiedSet.add(i));
+  }catch{}
+}
+function persistProgress(){
+  try{
+    localStorage.setItem(saveKey, JSON.stringify([...verifiedSet]));
+  }catch{}
+}
+
+// ----- UI table -----
+function renderTable(){
+  if(!rows.length){ $('tableWrap').innerHTML=''; return; }
+  const table=document.createElement('table');
+  const thead=document.createElement('thead');
+  const trh=document.createElement('tr');
+  [...header,'Verified'].forEach(h=>{ const th=document.createElement('th'); th.textContent=h; trh.appendChild(th); });
+  thead.appendChild(trh);
+  const tbody=document.createElement('tbody');
+
+  rows.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    if(verifiedSet.has(i)) tr.classList.add('ok');
+    header.forEach(h=>{ const td=document.createElement('td'); td.textContent=r[h] ?? ''; tr.appendChild(td); });
+    const tdv=document.createElement('td'); tdv.innerHTML=verifiedSet.has(i)?'<span class="pill ok">✓ Verified</span>':''; tr.appendChild(tdv);
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(thead); table.appendChild(tbody);
+  $('tableWrap').innerHTML=''; $('tableWrap').appendChild(table);
+}
+
+// ----- Camera / image -----
+async function startCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    const v=$('video'); v.srcObject=stream; await v.play();
+    $('snap').disabled=false; $('stopCam').disabled=false;
+    status('Camera running'); if($('auto').checked) startAuto();
+  }catch(e){ alert('Camera error: '+e.message); }
+}
+function stopCam(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } stopAuto(); $('snap').disabled=true; $('stopCam').disabled=true; status('Camera stopped'); }
+function startAuto(){ stopAuto(); autoTimer=setInterval(scanFrame,2000); }
+function stopAuto(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; } }
+$('startCam').onclick=startCam; $('stopCam').onclick=stopCam; $('snap').onclick=scanFrame;
+$('auto').onchange=e=>{ if(e.target.checked&&stream) startAuto(); else stopAuto(); };
+
+$('imgFile').addEventListener('change', async e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const img=new Image();
+  img.onload=async()=>{
+    const c=$('canvas'), ctx=c.getContext('2d');
+    c.width=img.width; c.height=img.height; ctx.drawImage(img,0,0);
+    await analyzeCanvas();
+  };
+  img.src=URL.createObjectURL(file);
+});
+
+async function scanFrame(){
+  if(!stream) return; const v=$('video'); if(v.readyState<2) return;
+  const c=$('canvas'), ctx=c.getContext('2d');
+  c.width=v.videoWidth; c.height=v.videoHeight; ctx.drawImage(v,0,0,c.width,c.height);
+  await analyzeCanvas();
+}
+
+// ----- OCR: pick alphanumeric serials (ACE0076657) or numeric (26780941) -----
+function pickSerialFromText(text){
+  const raw = text.replace(/\s+/g,' ').trim();
+  const U = raw.toUpperCase();
+
+  // Candidates: 8–14 alphanumeric OR 6–12 digits
+  const alphaNum = [...U.matchAll(/\b[A-Z0-9]{8,14}\b/g)].map(m=>({value:m[0], index:m.index}));
+  const digits   = [...U.matchAll(/\b\d{6,12}\b/g)].map(m=>({value:m[0], index:m.index}));
+  const nums = [...alphaNum, ...digits];
+  if(nums.length===0) return '';
+
+  const counts = {}; nums.forEach(n=>{ counts[n.value]=(counts[n.value]||0)+1; });
+
+  function near(i, kw){ const k=U.indexOf(kw); return k>=0 && Math.abs(i-k) < 80; }
+
+  function score(n){
+    let s=0;
+    if(counts[n.value]>=2) s+=5;                // appears twice on label
+    if(near(n.index,'192.168.2.1')) s+=3;
+    if(near(n.index,'ADMIN')) s+=3;
+    if(/^[A-Z]{2,}/.test(n.value)) s+=2;       // starts with letters like ACE…
+    if(/^\d{8}$/.test(n.value)) s+=2;          // pure 8-digit (other label style)
+    s += Math.min(n.value.length, 14)/14;      // stability bonus
+    return s;
+  }
+
+  nums.sort((a,b)=> score(b)-score(a));
+  return nums[0].value || '';
+}
+
+async function analyzeCanvas(){
+  status('Scanning...');
+  const c=$('canvas');
+  const { data:{ text } } = await Tesseract.recognize(c,'eng',{tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_:./@'});
+  const candidate = pickSerialFromText(text);
+  $('detected').textContent = candidate || '—';
+
+  if(!rows.length||!serialKey){ $('result').textContent='Load a CSV first.'; status('Waiting for CSV'); return; }
+
+  const norm = normalize(candidate);
+  if(!norm || norm.length < 6){ $('result').textContent='Could not read a clear serial. Move closer / add light.'; status('No clear serial'); return; }
+
+  const idx = indexMap.get(norm);
+  if(idx!==undefined){
+    verifiedSet.add(idx);
+    renderTable(); setProgress(); persistProgress();
+    const idVal = rows[idx]?.[idKey] ?? '';
+    $('result').innerHTML = `<span class="pill ok">Match ✓</span>${idVal? ' → ID: '+idVal:''}`;
+    status('Matched');
+  }else{
+    $('result').innerHTML = `<span class="pill bad">Not found</span>`;
+    status('Not found');
+  }
+}
+
+// ----- Export CSV with Verified column -----
+$('downloadCsv').addEventListener('click', ()=>{
+  if(!rows.length) return;
+  const out = rows.map((r,i)=>({ ...r, Verified: verifiedSet.has(i)?'Yes':'' }));
+  const csv = Papa.unparse(out);
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='ev_serials_verified.csv'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+function persistProgress(){
+  try{ localStorage.setItem(saveKey, JSON.stringify([...verifiedSet])); }catch{}
+}
+</script>
+</body>
+</html>
