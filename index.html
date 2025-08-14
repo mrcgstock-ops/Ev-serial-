@@ -35,13 +35,6 @@
     <label>Show as ID:
       <select id="idCol"></select>
     </label>
-    <label>Matching mode:
-      <select id="modeSel" title="Choose which serial format to prioritise">
-        <option value="alfen">ALFEN (ACE#######)</option>
-        <option value="keba">KEBA (Numeric style)</option>
-        <option value="general" selected>General (Any match)</option>
-      </select>
-    </label>
     <button id="downloadCsv" disabled>Export updated CSV</button>
     <button id="resetProgress" disabled>Reset progress</button>
     <span id="progress" class="pill">0 verified</span>
@@ -58,6 +51,13 @@
       <input type="file" id="imgFile" accept="image/*;capture=camera" />
       <button id="snap" disabled>Scan Frame</button>
       <label><input type="checkbox" id="auto" checked /> Auto-scan every 2s</label>
+      <label>Matching mode:
+        <select id="modeSel" title="Choose which serial format to prioritise">
+          <option value="alfen">ALFEN (ACE#######)</option>
+          <option value="keba">KEBA (Numeric style)</option>
+          <option value="general" selected>General (Any match)</option>
+        </select>
+      </label>
     </div>
     <video id="video" playsinline muted style="width:100%; max-height:300px; background:#000;"></video>
     <canvas id="canvas" style="display:none;"></canvas>
@@ -202,13 +202,13 @@ function pickSerialFromText(text){
     ...[...U.matchAll(/\b\d{6,12}\b/g)].map(m=>({value:m[0], index:m.index}))
   ];
 
-  if(mode === 'alfen'){
+  if(mode === 'alfen'){                // ALFEN (ACE####### only)
     return aceMatches.length ? aceMatches[0].value : '';
   }
-  if(mode === 'keba'){
+  if(mode === 'keba'){                 // KEBA (original numeric/alphanumeric rules)
     return generalMatches.length ? scoreSort(generalMatches,U)[0].value : '';
   }
-  // general mode: ACE preferred if found, else general
+  // general mode: prefer ACE if present, else use general
   if(aceMatches.length) return aceMatches[0].value;
   return generalMatches.length ? scoreSort(generalMatches,U)[0].value : '';
 }
