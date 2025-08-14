@@ -35,6 +35,13 @@
     <label>Show as ID:
       <select id="idCol"></select>
     </label>
+    <label>Matching mode:
+      <select id="modeSel" title="Choose which serial format to prioritise">
+        <option value="alfen">ALFEN (ACE#######)</option>
+        <option value="keba">KEBA (Numeric style)</option>
+        <option value="general" selected>General (Any match)</option>
+      </select>
+    </label>
     <button id="downloadCsv" disabled>Export updated CSV</button>
     <button id="resetProgress" disabled>Reset progress</button>
     <span id="progress" class="pill">0 verified</span>
@@ -184,35 +191,50 @@ async function scanFrame(){
   await analyzeCanvas();
 }
 
-// ----- OCR + selection -----
+// ----- OCR + matching -----
 function pickSerialFromText(text){
+  const mode = $('modeSel').value;
   const U = text.replace(/\s+/g,' ').trim().toUpperCase();
-  const alphaNum = [...U.matchAll(/\b[A-Z0-9]{8,14}\b/g)].map(m=>({value:m[0], index:m.index}));
-  const digits   = [...U.matchAll(/\b\d{6,12}\b/g)].map(m=>({value:m[0], index:m.index}));
-  const nums = [...alphaNum, ...digits];
-  if(nums.length===0) return '';
 
-  const counts = {}; nums.forEach(n=>{ counts[n.value]=(counts[n.value]||0)+1; });
-  const near = (i,kw)=>{ const k=U.indexOf(kw); return k>=0 && Math.abs(i-k)<80; };
-  const score = n=>{
-    let s=0;
-    if(counts[n.value]>=2) s+=5;
-    if(near(n.index,'192.168.2.1')) s+=3;
-    if(near(n.index,'ADMIN')) s+=3;
-    if(/^[A-Z]{2,}/.test(n.value)) s+=2;
-    if(/^\d{8}$/.test(n.value)) s+=2;
-    return s + Math.min(n.value.length,14)/14;
-  };
-  nums.sort((a,b)=>score(b)-score(a));
-  return nums[0].value || '';
+  const aceMatches = [...U.matchAll(/\bACE\d{7}\b/g)].map(m=>({value:m[0], index:m.index}));
+  const generalMatches = [
+    ...[...U.matchAll(/\b[A-Z0-9]{8,14}\b/g)].map(m=>({value:m[0], index:m.index})),
+    ...[...U.matchAll(/\b\d{6,12}\b/g)].map(m=>({value:m[0], index:m.index}))
+  ];
+
+  if(mode === 'alfen'){
+    return aceMatches.length ? aceMatches[0].value : '';
+  }
+  if(mode === 'keba'){
+    return generalMatches.length ? scoreSort(generalMatches,U)[0].value : '';
+  }
+  // general mode: ACE preferred if found, else general
+  if(aceMatches.length) return aceMatches[0].value;
+  return generalMatches.length ? scoreSort(generalMatches,U)[0].value : '';
+}
+
+function scoreSort(list,U){
+  return list.sort((a,b)=> scoreCandidate(b,U) - scoreCandidate(a,U));
+}
+function scoreCandidate(n, U){
+  const list = [...U.matchAll(new RegExp(`\\b${n.value}\\b`, 'g'))];
+  const repeats = list.length;
+  const near = (kw)=>{ const k=U.indexOf(kw); return k>=0 ? Math.abs((n.index??0)-k) : 9e9; };
+  let s = 0;
+  if(repeats>=2) s+=5;
+  if(/^ACE\d{7}$/.test(n.value)) s+=6;
+  if(near('192.168.2.1') < 80) s+=3;
+  if(near('ADMIN') < 80) s+=3;
+  if(/^[A-Z]{2,}/.test(n.value)) s+=2;
+  if(/^\d{8}$/.test(n.value)) s+=2;
+  return s + Math.min(n.value.length,14)/14;
 }
 
 function handleCandidate(candidate){
   $('detected').textContent = candidate || '—';
   if(!rows.length||!serialKey){ $('result').textContent='Load a CSV first.'; setStatus('Waiting for CSV'); return; }
   const norm = normalize(candidate);
-  if(!norm || norm.length < 6){ $('result').textContent='Serial not valid. Check input / move closer.'; setStatus('No clear serial'); return; }
-
+  if(!norm || norm.length < 6){ $('result').textContent='Serial not valid.'; setStatus('No clear serial'); return; }
   const idx = indexMap.get(norm);
   if(idx!==undefined){
     verifiedSet.add(idx);
